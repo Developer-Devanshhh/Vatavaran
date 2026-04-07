@@ -1,0 +1,4 @@
+{
+  "ec2_endpoint": "http://your-ec2-ip:8000/api/predict/",
+  "timeout": 30
+}

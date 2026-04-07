@@ -1,0 +1,9 @@
+django>=6.0.0
+djangorestframework>=3.17.0
+tensorflow>=2.20.0
+scikit-learn>=1.6.0
+pandas>=2.3.0
+numpy>=2.2.0
+requests>=2.32.0
+joblib>=1.4.0
+gunicorn>=25.3.0
