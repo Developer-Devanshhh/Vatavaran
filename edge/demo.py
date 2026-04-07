@@ -1,34 +1,21 @@
 #!/usr/bin/env python3
 """
-Vatavaran Interactive Demo — Full Simulation with LCD Display
-
-Runs a real-time simulation showing:
-  - LSTM predictions on an LCD display
-  - Live schedule with mode indicators (LSTM / Override)
-  - Voice command input for overrides
-  - Sensor readings (real or simulated)
-  - IR blaster actions
+Vatavaran Interactive Demo — 16x2 LCD + Voice + LSTM
 
 Usage:
-    python -m edge.demo                    # Full interactive demo
-    python -m edge.demo --voice "too hot"  # Demo with a voice command
-    python -m edge.demo --walk             # Walk through all 96 slots
+    python -m edge.demo                        # Basic demo
+    python -m edge.demo --voice "too hot"      # With voice override
+    python -m edge.demo --walk                 # Walk all 96 slots
+    python -m edge.demo --walk --voice "set to 22"
 """
 
-import os
-import sys
-import time
-import json
-import logging
-import argparse
-import threading
+import os, sys, time, json, logging, argparse
 from pathlib import Path
 from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
 
-# Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -37,10 +24,6 @@ from edge.features import build_feature_matrix
 from edge.csv_generator import generate_schedule_csv
 from edge.nlp.command_parser import parse_command
 from edge.lcd_display import LCDDisplay, C
-
-logger = logging.getLogger(__name__)
-
-# ─── Configuration ────────────────────────────────────────────────
 
 CONFIG_FILE = Path(__file__).parent / 'config.json'
 
@@ -52,316 +35,200 @@ def load_config():
     return {}
 
 
-def generate_mock_weather():
+def mock_weather():
     now = datetime.now().replace(minute=0, second=0, microsecond=0)
     hours = [now + timedelta(hours=i) for i in range(24)]
     return pd.DataFrame({
         'timestamp': hours,
-        'temp_c': [26.0 + 3.0 * np.sin(2 * np.pi * (h.hour - 6) / 24) for h in hours],
-        'humidity': [65 + 10 * np.sin(2 * np.pi * h.hour / 24) for h in hours],
-        'pressure_mb': [1013.0 + np.random.uniform(-1, 1) for _ in hours],
-        'cloud': [40 + 20 * np.sin(2 * np.pi * h.hour / 24) for h in hours],
-        'feelslike_c': [27.0] * 24,
-        'wind_kph': [10.0] * 24,
-        'uv': [5.0 if 6 <= h.hour <= 18 else 0.0 for h in hours],
-        'condition_code': [1000] * 24,
+        'temp_c': [26 + 3 * np.sin(2*np.pi*(h.hour-6)/24) for h in hours],
+        'humidity': [65 + 10*np.sin(2*np.pi*h.hour/24) for h in hours],
+        'pressure_mb': [1013 + np.random.uniform(-1,1) for _ in hours],
+        'cloud': [40 + 20*np.sin(2*np.pi*h.hour/24) for h in hours],
     })
 
 
-def generate_mock_sensor(base_temp=26.5):
+def mock_sensor(base=26.5):
     return {
         'timestamp': datetime.now().isoformat(),
-        'temperature_c': base_temp + np.random.uniform(-0.5, 0.5),
-        'humidity': 65.0 + np.random.uniform(-5, 5),
-        'pressure_mb': 1013.0 + np.random.uniform(-2, 2),
-        'light': 50.0 + np.random.uniform(-10, 10),
-        'device_id': 'rpi_sensor_01',
+        'temperature_c': base + np.random.uniform(-0.5, 0.5),
+        'humidity': 65 + np.random.uniform(-5, 5),
+        'pressure_mb': 1013 + np.random.uniform(-2, 2),
+        'light': 50 + np.random.uniform(-10, 10),
     }
 
 
-# ─── Demo Modes ───────────────────────────────────────────────────
-
 def run_demo(predictor, config, voice_command=None, walk_mode=False):
-    """
-    Run the full interactive demo.
+    lcd = LCDDisplay(address=0x27, cols=16, rows=2)
 
-    Phases:
-      Phase 1: Sensor reading animation
-      Phase 2: LSTM inference with progress
-      Phase 3: Display schedule on LCD
-      Phase 4: Voice command override (if provided)
-      Phase 5: Walk through time slots (if --walk)
-    """
-    lcd = LCDDisplay(cols=20, rows=4)
-
-    # ═══════════════════════════════════════════════════════════════
-    # PHASE 1: Startup & Sensor Reading
-    # ═══════════════════════════════════════════════════════════════
-    lcd.clear()
-    lcd.write_line(0, "  VATAVARAN v1.0   ")
-    lcd.write_line(1, "  Climate Control  ")
-    lcd.write_line(2, "                    ")
-    lcd.write_line(3, " Initializing...    ")
-    lcd.render_terminal()
+    # ── Phase 1: Startup ─────────────────────────────────────────
+    lcd.show_startup()
     print(f"\n  {C.DIM}Press Enter to start...{C.RESET}")
     input()
 
-    # Read sensor
-    sensor = generate_mock_sensor()
-    lcd.clear()
-    lcd.write_line(0, " Reading Sensors... ")
-    lcd.write_line(1, f" T: {sensor['temperature_c']:.1f}°C")
-    lcd.write_line(2, f" H: {sensor['humidity']:.0f}%  P:{sensor['pressure_mb']:.0f}")
-    lcd.write_line(3, f" L: {sensor['light']:.0f} lux")
-    lcd.render_terminal()
-    time.sleep(1.5)
+    # ── Phase 2: Sensor ──────────────────────────────────────────
+    sensor = mock_sensor()
+    lcd.show_sensor(sensor['temperature_c'], sensor['humidity'])
+    time.sleep(2)
 
-    # ═══════════════════════════════════════════════════════════════
-    # PHASE 2: Feature Engineering & LSTM Inference
-    # ═══════════════════════════════════════════════════════════════
-    lcd.clear()
-    lcd.write_line(0, " Building Features  ")
-    lcd.write_line(1, " 90 features...     ")
-    lcd.write_line(2, "                    ")
-    lcd.write_line(3, "                    ")
-    lcd.render_terminal()
-
-    # Build feature matrix
-    sensor_history = pd.DataFrame([{
+    # ── Phase 3: Feature Engineering ─────────────────────────────
+    lcd.show_building()
+    sensor_df = pd.DataFrame([{
         'timestamp': sensor['timestamp'],
         'temperature_c': sensor['temperature_c'],
         'humidity': sensor['humidity'],
         'pressure_mb': sensor['pressure_mb'],
         'light': sensor['light'],
     }])
-    weather = generate_mock_weather()
-    model_config_path = str(Path(config.get('model_dir', '.')) / 'model_config.pkl')
-    feature_matrix = build_feature_matrix(sensor_history, weather, model_config_path)
-
+    weather = mock_weather()
+    cfg_path = str(Path(config.get('model_dir', '.')) / 'model_config.pkl')
+    matrix = build_feature_matrix(sensor_df, weather, cfg_path)
     time.sleep(0.5)
-    lcd.write_line(1, " 90 features  [OK]  ")
-    lcd.write_line(2, f" Matrix: {feature_matrix.shape}")
-    lcd.render_terminal()
-    time.sleep(1)
 
-    # LSTM Inference with progress bar
-    lcd.clear()
-    lcd.write_line(0, " LSTM Inference     ")
-    lcd.write_line(1, " 96 predictions...  ")
-    lcd.render_terminal()
+    # ── Phase 4: LSTM Inference ──────────────────────────────────
+    lcd.show_inferring()
+    t0 = time.time()
+    predictions = predictor.predict_24h(matrix)
+    elapsed = time.time() - t0
+    lcd.show_done(elapsed, predictions.min(), predictions.max())
+    time.sleep(2)
 
-    start_t = time.time()
-    predictions = predictor.predict_24h(feature_matrix)
-    elapsed = time.time() - start_t
-
-    lcd.write_line(1, f" Done in {elapsed:.1f}s!  ")
-    lcd.write_line(2, f" Range: {predictions.min():.1f}-{predictions.max():.1f}°C")
-    lcd.write_line(3, f" Slots: {len(predictions)}")
-    lcd.render_terminal()
-    time.sleep(1.5)
-
-    # ═══════════════════════════════════════════════════════════════
-    # PHASE 3: Generate Schedule & Display
-    # ═══════════════════════════════════════════════════════════════
+    # ── Phase 5: Voice Override ──────────────────────────────────
     override_data = None
-    active_voice_cmd = None
+    active_cmd = None
 
     if voice_command:
-        # Parse voice command
-        nlp_result = parse_command(voice_command, sensor['temperature_c'])
+        nlp = parse_command(voice_command, sensor['temperature_c'])
+        override_temp = None
 
-        if 'absolute' in nlp_result:
-            override_data = {'temperature': nlp_result['absolute'], 'slots': 4}
-        elif 'delta' in nlp_result and nlp_result['delta'] != 0:
-            override_temp = int(predictions[0]) + nlp_result['delta']
-            override_temp = max(18, min(30, override_temp))
+        if 'absolute' in nlp:
+            override_temp = nlp['absolute']
+        elif 'delta' in nlp and nlp['delta'] != 0:
+            override_temp = max(18, min(30, int(predictions[0]) + nlp['delta']))
+
+        lcd.show_voice_cmd(voice_command, nlp, override_temp)
+        time.sleep(2.5)
+
+        if override_temp:
             override_data = {'temperature': override_temp, 'slots': 4}
+            active_cmd = voice_command
 
-        active_voice_cmd = voice_command
+    # ── Phase 6: Generate Schedule ───────────────────────────────
+    csv = generate_schedule_csv(predictions, override_data)
+    lines = csv.strip().split('\n')[1:]  # skip header
 
-        # Show voice command processing
-        lcd.clear()
-        lcd.write_line(0, " Voice Command      ")
-        lcd.write_line(1, f'"{voice_command[:18]}"')
-        lcd.write_line(2, f" NLP: {nlp_result}")
-        if override_data:
-            lcd.write_line(3, f" Override: {override_data['temperature']}°C x{override_data['slots']}")
-        else:
-            lcd.write_line(3, " No override needed ")
-        lcd.render_terminal()
-        time.sleep(2)
+    path = Path(config.get('schedule_file', 'schedule.csv'))
+    with open(path, 'w') as f:
+        f.write(csv)
 
-    # Generate CSV
-    csv_content = generate_schedule_csv(predictions, override_data)
-    schedule_lines = csv_content.strip().split('\n')[1:]  # Skip header
-
-    # Save schedule
-    schedule_path = Path(config.get('schedule_file', 'schedule.csv'))
-    with open(schedule_path, 'w') as f:
-        f.write(csv_content)
-
-    # ═══════════════════════════════════════════════════════════════
-    # PHASE 4: Live Display — Walk Through Schedule
-    # ═══════════════════════════════════════════════════════════════
+    # ── Phase 7: Display Schedule ────────────────────────────────
     if walk_mode:
-        print(f"\n  {C.CYAN}{C.BOLD}Walking through all 96 time slots...{C.RESET}")
-        print(f"  {C.DIM}Press Ctrl+C to stop{C.RESET}\n")
+        print(f"\n  {C.CYAN}Walking 96 slots — Ctrl+C to stop{C.RESET}\n")
         time.sleep(1)
-
         try:
-            for i, line in enumerate(schedule_lines):
+            for i, line in enumerate(lines):
                 parts = line.strip().split(',')
-                if len(parts) != 3:
-                    continue
-
+                if len(parts) != 3: continue
                 ts, temp, src = parts
-                setpoint = int(temp)
-                sensor = generate_mock_sensor(base_temp=setpoint + np.random.uniform(-2, 2))
+                sp = int(temp)
+                s = mock_sensor(base=sp + np.random.uniform(-2, 2))
 
-                lcd.show_status(
-                    sensor_temp=sensor['temperature_c'],
-                    setpoint=setpoint,
-                    mode=src,
-                    slot_time=ts,
-                    humidity=sensor['humidity'],
-                    pressure=sensor['pressure_mb'],
-                    light=sensor['light'],
-                    voice_cmd=active_voice_cmd if src == 'override' else None
+                lcd.show_main(
+                    sensor_temp=s['temperature_c'], setpoint=sp,
+                    mode=src, slot_time=ts,
+                    humidity=s['humidity'], pressure=s['pressure_mb'],
+                    voice_cmd=active_cmd if src == 'override' else None
                 )
-                lcd.show_schedule_preview(schedule_lines, current_slot=i)
-
-                # IR blaster simulation
-                print(f"\n  {C.MAGENTA}📡 IR Blaster → Sending {setpoint}°C to AC unit{C.RESET}")
-                print(f"  {C.DIM}[Slot {i+1}/96 | {ts}]{C.RESET}")
-
-                if walk_mode:
-                    time.sleep(0.8)  # Fast walk-through
-
+                # Show IR blaster action
+                lcd.show_ir(sp, src)
+                lcd.show_schedule(lines, current=i)
+                print(f"\n  {C.MAGENTA}📡 IR → AC {sp}°C [{src}] | Slot {i+1}/96{C.RESET}")
+                time.sleep(0.8)
         except KeyboardInterrupt:
-            print(f"\n\n  {C.YELLOW}Demo stopped by user{C.RESET}")
+            print(f"\n  {C.YELLOW}Stopped{C.RESET}")
     else:
-        # Just show the current slot
-        parts = schedule_lines[0].strip().split(',')
+        # Show first slot
+        parts = lines[0].strip().split(',')
         ts, temp, src = parts
-        setpoint = int(temp)
-
-        lcd.show_status(
-            sensor_temp=sensor['temperature_c'],
-            setpoint=setpoint,
-            mode=src,
-            slot_time=ts,
-            humidity=sensor['humidity'],
-            pressure=sensor['pressure_mb'],
-            light=sensor['light'],
-            voice_cmd=active_voice_cmd if src == 'override' else None
+        sp = int(temp)
+        lcd.show_main(
+            sensor_temp=sensor['temperature_c'], setpoint=sp,
+            mode=src, slot_time=ts,
+            humidity=sensor['humidity'], pressure=sensor['pressure_mb'],
+            voice_cmd=active_cmd if src == 'override' else None
         )
-        lcd.show_schedule_preview(schedule_lines, current_slot=0)
+        lcd.show_schedule(lines)
 
-    # ═══════════════════════════════════════════════════════════════
-    # PHASE 5: Interactive Voice Command Loop
-    # ═══════════════════════════════════════════════════════════════
-    print(f"\n  {C.CYAN}{C.BOLD}═══ Interactive Voice Command Mode ═══{C.RESET}")
-    print(f"  {C.WHITE}Type a voice command to override the schedule.{C.RESET}")
-    print(f"  {C.DIM}Examples: \"too hot\", \"set to 22\", \"very cold\", \"make it cooler\"{C.RESET}")
+    # ── Phase 8: Interactive Voice Loop ──────────────────────────
+    print(f"\n  {C.CYAN}{C.BOLD}═══ Voice Command Mode ═══{C.RESET}")
+    print(f"  {C.DIM}Type: \"too hot\", \"set to 22\", \"very cold\", \"cooler\"{C.RESET}")
     print(f"  {C.DIM}Type 'quit' to exit{C.RESET}\n")
 
     while True:
         try:
-            cmd = input(f"  {C.YELLOW}🎤 Voice > {C.RESET}")
-            if cmd.lower() in ('quit', 'exit', 'q'):
-                break
-            if not cmd.strip():
+            cmd = input(f"  {C.YELLOW}🎤 Voice > {C.RESET}").strip()
+            if cmd.lower() in ('quit', 'exit', 'q', ''):
+                if cmd.lower() in ('quit', 'exit', 'q'):
+                    break
                 continue
 
-            # Parse command
-            current_temp = sensor['temperature_c']
-            nlp_result = parse_command(cmd, current_temp)
+            nlp = parse_command(cmd, sensor['temperature_c'])
+            override_temp = None
 
-            # Determine override
-            override_data = None
-            if 'absolute' in nlp_result:
-                override_data = {'temperature': nlp_result['absolute'], 'slots': 4}
-            elif 'delta' in nlp_result and nlp_result['delta'] != 0:
-                base = int(predictions[0])
-                override_temp = base + nlp_result['delta']
-                override_temp = max(18, min(30, override_temp))
-                override_data = {'temperature': override_temp, 'slots': 4}
+            if 'absolute' in nlp:
+                override_temp = nlp['absolute']
+            elif 'delta' in nlp and nlp['delta'] != 0:
+                override_temp = max(18, min(30, int(predictions[0]) + nlp['delta']))
 
-            # Regenerate schedule with override
-            csv_content = generate_schedule_csv(predictions, override_data)
-            schedule_lines = csv_content.strip().split('\n')[1:]
+            lcd.show_voice_cmd(cmd, nlp, override_temp)
+            time.sleep(1.5)
 
-            with open(schedule_path, 'w') as f:
-                f.write(csv_content)
+            ov = {'temperature': override_temp, 'slots': 4} if override_temp else None
+            csv = generate_schedule_csv(predictions, ov)
+            lines = csv.strip().split('\n')[1:]
 
-            # Display updated schedule
-            parts = schedule_lines[0].strip().split(',')
+            with open(path, 'w') as f:
+                f.write(csv)
+
+            parts = lines[0].strip().split(',')
             ts, temp, src = parts
-            setpoint = int(temp)
+            sp = int(temp)
 
-            sensor = generate_mock_sensor(base_temp=current_temp)
-
-            lcd.show_status(
-                sensor_temp=sensor['temperature_c'],
-                setpoint=setpoint,
-                mode=src,
-                slot_time=ts,
-                humidity=sensor['humidity'],
-                pressure=sensor['pressure_mb'],
-                light=sensor['light'],
+            lcd.show_main(
+                sensor_temp=sensor['temperature_c'], setpoint=sp,
+                mode=src, slot_time=ts,
+                humidity=sensor['humidity'], pressure=sensor['pressure_mb'],
                 voice_cmd=cmd if src == 'override' else None
             )
-            lcd.show_schedule_preview(schedule_lines, current_slot=0)
 
-            print(f"\n  {C.GREEN}NLP Result: {nlp_result}{C.RESET}")
-            if override_data:
-                print(f"  {C.YELLOW}Override: {override_data['temperature']}°C for next {override_data['slots']} slots (1 hour){C.RESET}")
-            else:
-                print(f"  {C.DIM}No override — command not recognized{C.RESET}")
+            # Show IR blaster
+            lcd.show_ir(sp, src)
+            lcd.show_schedule(lines)
+
+            print(f"\n  {C.GREEN}NLP: {nlp}{C.RESET}")
+            if override_temp:
+                print(f"  {C.YELLOW}Override: {override_temp}°C for 1 hour{C.RESET}")
+                print(f"  {C.MAGENTA}📡 IR → AC set to {override_temp}°C{C.RESET}")
             print()
 
-        except KeyboardInterrupt:
-            break
-        except EOFError:
+        except (KeyboardInterrupt, EOFError):
             break
 
-    # Goodbye
-    lcd.clear()
-    lcd.write_line(0, "  VATAVARAN v1.0   ")
-    lcd.write_line(1, "                    ")
-    lcd.write_line(2, " System Standby     ")
-    lcd.write_line(3, " Goodbye!           ")
-    lcd.render_terminal()
-    print(f"\n  {C.CYAN}╚══════════════════════════════════════════════════╝{C.RESET}")
-    print(f"\n  {C.GREEN}{C.BOLD}Demo complete! Schedule saved to {schedule_path}{C.RESET}\n")
+    lcd.show_goodbye()
+    print(f"\n  {C.GREEN}Schedule saved to {path}{C.RESET}\n")
 
-
-# ─── Entry Point ──────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(
-        description='Vatavaran Interactive Demo — LCD + Voice + LSTM'
-    )
-    parser.add_argument('--voice', type=str, default=None,
-                        help='Initial voice command (e.g. "too hot")')
-    parser.add_argument('--walk', action='store_true',
-                        help='Walk through all 96 time slots')
-    parser.add_argument('--config', type=str, default=None,
-                        help='Path to config.json')
-
+    parser = argparse.ArgumentParser(description='Vatavaran Demo')
+    parser.add_argument('--voice', type=str, help='Voice command')
+    parser.add_argument('--walk', action='store_true', help='Walk all slots')
     args = parser.parse_args()
 
-    # Minimal logging (demo is visual, not log-heavy)
     logging.basicConfig(level=logging.WARNING)
-
     config = load_config()
-    model_dir = config.get('model_dir', '.')
 
-    # Clear screen
     os.system('clear' if os.name == 'posix' else 'cls')
-
-    print(f"\n  {C.CYAN}{C.BOLD}Loading LSTM model...{C.RESET}", end=' ', flush=True)
-    predictor = LSTMPredictor(model_dir=model_dir)
+    print(f"\n  {C.CYAN}Loading LSTM model...{C.RESET}", end=' ', flush=True)
+    predictor = LSTMPredictor(model_dir=config.get('model_dir', '.'))
     print(f"{C.GREEN}✓{C.RESET}\n")
 
     run_demo(predictor, config, voice_command=args.voice, walk_mode=args.walk)

@@ -1,21 +1,19 @@
 """
-LCD Display Module for Vatavaran Edge
+LCD Display Module for Vatavaran Edge — 16x2 I2C LCD
 
-Supports:
-  - Real I2C LCD (16x2 or 20x4) via RPLCD
-  - Terminal simulation when no hardware is present
-
-Shows: current temp, setpoint, mode (LSTM/Override), time slot
+Hardware: 16x2 LCD with PCF8574 backpack at I2C address 0x27
+Cycles through info screens since we only have 2 lines.
+Also renders a terminal simulation alongside.
 """
 
 import logging
-import os
 import sys
+import time
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-# ANSI color codes for terminal display
+# ANSI colors for terminal
 class C:
     RESET   = '\033[0m'
     BOLD    = '\033[1m'
@@ -24,180 +22,180 @@ class C:
     GREEN   = '\033[92m'
     YELLOW  = '\033[93m'
     RED     = '\033[91m'
-    BLUE    = '\033[94m'
     MAGENTA = '\033[95m'
     WHITE   = '\033[97m'
     BG_DARK = '\033[40m'
-    BG_BLUE = '\033[44m'
 
 
 class LCDDisplay:
     """
-    LCD display abstraction.
-    Uses real I2C LCD if available, otherwise renders a beautiful
-    terminal-based LCD simulation.
+    16x2 I2C LCD display controller.
+    Writes to real hardware LCD AND terminal simultaneously.
     """
 
-    def __init__(self, cols=20, rows=4):
+    def __init__(self, address=0x27, cols=16, rows=2):
         self.cols = cols
         self.rows = rows
         self._lines = [''] * rows
-        self._use_hardware = False
+        self._hw = None
 
         try:
             from RPLCD.i2c import CharLCD
-            self.lcd = CharLCD(
-                i2c_expander='PCF8574', address=0x27,
-                port=1, cols=cols, rows=rows
+            self._hw = CharLCD(
+                i2c_expander='PCF8574', address=address,
+                port=1, cols=cols, rows=rows,
+                charmap='A02', auto_linebreaks=False
             )
-            self._use_hardware = True
-            logger.info("Hardware LCD initialized (I2C)")
-        except Exception:
-            logger.info("No hardware LCD — using terminal display")
+            self._hw.clear()
+            logger.info(f"Hardware LCD initialized ({cols}x{rows} at 0x{address:02x})")
+        except Exception as e:
+            logger.warning(f"No hardware LCD: {e}")
 
     def clear(self):
-        if self._use_hardware:
-            self.lcd.clear()
+        if self._hw:
+            self._hw.clear()
         self._lines = [''] * self.rows
 
-    def write_line(self, row, text):
-        """Write text to a specific row (0-indexed)."""
-        if row >= self.rows:
-            return
-        self._lines[row] = text[:self.cols].ljust(self.cols)
-        if self._use_hardware:
-            self.lcd.cursor_pos = (row, 0)
-            self.lcd.write_string(self._lines[row])
+    def write(self, row, text):
+        """Write text to row (0 or 1). Pads/truncates to 16 chars."""
+        text = str(text)[:self.cols].ljust(self.cols)
+        self._lines[row] = text
+        if self._hw:
+            self._hw.cursor_pos = (row, 0)
+            self._hw.write_string(text)
 
-    def render_terminal(self):
-        """Render the LCD content as a beautiful terminal display."""
-        # Move cursor up to overwrite previous display
-        sys.stdout.write('\033[2J\033[H')  # Clear screen, move to top
-
+    def _print_terminal(self, extra_lines=None):
+        """Print the LCD contents + extra info to terminal."""
+        sys.stdout.write('\033[2J\033[H')
         now = datetime.now().strftime('%H:%M:%S')
 
-        # Header
-        print(f"\n  {C.CYAN}{C.BOLD}╔══════════════════════════════════════════════════╗{C.RESET}")
-        print(f"  {C.CYAN}{C.BOLD}║{C.RESET}   {C.WHITE}{C.BOLD}🌿 VATAVARAN — Smart Climate Controller{C.RESET}     {C.CYAN}{C.BOLD}║{C.RESET}")
-        print(f"  {C.CYAN}{C.BOLD}║{C.RESET}   {C.DIM}Raspberry Pi 4B Edge Device    {now}{C.RESET}  {C.CYAN}{C.BOLD}║{C.RESET}")
-        print(f"  {C.CYAN}{C.BOLD}╠══════════════════════════════════════════════════╣{C.RESET}")
+        print(f"\n  {C.CYAN}{C.BOLD}╔════════════════════════════════════════╗{C.RESET}")
+        print(f"  {C.CYAN}{C.BOLD}║{C.RESET}  🌿 VATAVARAN  |  RPi 4B  |  {now}  {C.CYAN}{C.BOLD}║{C.RESET}")
+        print(f"  {C.CYAN}{C.BOLD}╠════════════════════════════════════════╣{C.RESET}")
 
-        # LCD simulation box
-        print(f"  {C.CYAN}{C.BOLD}║{C.RESET}                                                  {C.CYAN}{C.BOLD}║{C.RESET}")
+        # LCD box
+        print(f"  {C.CYAN}{C.BOLD}║{C.RESET}  ┌──────────────────┐                {C.CYAN}{C.BOLD}║{C.RESET}")
+        for line in self._lines:
+            color = C.GREEN if 'LSTM' in line else (C.YELLOW if 'OVR' in line or 'VOICE' in line else C.WHITE)
+            print(f"  {C.CYAN}{C.BOLD}║{C.RESET}  │{C.BG_DARK}{color}{C.BOLD}{line}{C.RESET}│  ← LCD          {C.CYAN}{C.BOLD}║{C.RESET}")
+        print(f"  {C.CYAN}{C.BOLD}║{C.RESET}  └──────────────────┘                {C.CYAN}{C.BOLD}║{C.RESET}")
 
-        for i, line in enumerate(self._lines):
-            padded = line.ljust(self.cols)
-            # Color code based on content
-            if 'LSTM' in line:
-                color = C.GREEN
-            elif 'OVERRIDE' in line or 'VOICE' in line:
-                color = C.YELLOW
-            elif '°C' in line or 'Temp' in line:
-                color = C.WHITE + C.BOLD
-            else:
-                color = C.WHITE
+        if extra_lines:
+            print(f"  {C.CYAN}{C.BOLD}╠════════════════════════════════════════╣{C.RESET}")
+            for el in extra_lines:
+                print(f"  {C.CYAN}{C.BOLD}║{C.RESET}  {el:<38s}{C.CYAN}{C.BOLD}║{C.RESET}")
+        print(f"  {C.CYAN}{C.BOLD}╚════════════════════════════════════════╝{C.RESET}")
 
-            print(f"  {C.CYAN}{C.BOLD}║{C.RESET}     {C.BG_DARK} {color}{padded}{C.RESET}{C.BG_DARK} {C.RESET}               {C.CYAN}{C.BOLD}║{C.RESET}")
+    # ── High-level display methods ───────────────────────────────
 
-        print(f"  {C.CYAN}{C.BOLD}║{C.RESET}                                                  {C.CYAN}{C.BOLD}║{C.RESET}")
-        print(f"  {C.CYAN}{C.BOLD}╠══════════════════════════════════════════════════╣{C.RESET}")
+    def show_startup(self):
+        self.write(0, " VATAVARAN  v1.0")
+        self.write(1, "Initializing... ")
+        self._print_terminal()
 
-    def show_status(self, sensor_temp, setpoint, mode, slot_time,
-                    humidity=None, pressure=None, light=None,
-                    voice_cmd=None):
-        """
-        Update the LCD with current status.
+    def show_sensor(self, temp, humidity):
+        self.write(0, f"T:{temp:5.1f}C H:{humidity:4.0f}%")
+        self.write(1, "Reading sensors ")
+        self._print_terminal()
 
-        Args:
-            sensor_temp: Current sensor temperature (°C)
-            setpoint: Target setpoint temperature (°C)
-            mode: 'lstm' or 'override'
-            slot_time: Current time slot string
-            humidity: Humidity %
-            pressure: Pressure hPa
-            light: Light lux
-            voice_cmd: Active voice command (if any)
-        """
-        mode_str = '🤖 LSTM' if mode == 'lstm' else '🎤 OVERRIDE'
-        mode_color = C.GREEN if mode == 'lstm' else C.YELLOW
+    def show_building(self):
+        self.write(0, "Building 90     ")
+        self.write(1, "features...     ")
+        self._print_terminal()
 
-        # Line 1: Temperature display
-        self.write_line(0, f"Now:{sensor_temp:5.1f}°C Set:{setpoint:2d}°C")
-
-        # Line 2: Mode and time
-        time_short = slot_time[-8:-3] if len(slot_time) > 8 else slot_time
-        self.write_line(1, f"Mode:{mode_str:>14s}")
-
-        # Line 3: Environment
-        if humidity is not None:
-            self.write_line(2, f"H:{humidity:4.0f}% P:{pressure:7.1f}hPa")
+    def show_inferring(self, progress=None):
+        self.write(0, "LSTM Inference  ")
+        if progress:
+            pct = int(progress * 16)
+            bar = chr(0xFF) * pct + ' ' * (16 - pct)
+            self.write(1, bar[:16])
         else:
-            self.write_line(2, f"Slot: {time_short}")
+            self.write(1, "96 predictions..")
+        self._print_terminal()
 
-        # Line 4: Voice command or slot time
+    def show_done(self, elapsed, temp_min, temp_max):
+        self.write(0, f"Done! {elapsed:.0f}s       ")
+        self.write(1, f"{temp_min:.0f}-{temp_max:.0f}C 96 slots")
+        self._print_terminal()
+
+    def show_main(self, sensor_temp, setpoint, mode, slot_time,
+                  humidity=None, pressure=None, voice_cmd=None):
+        """
+        Main operating display. Cycles through screens on LCD,
+        shows everything in terminal.
+        """
+        mode_tag = "LSTM" if mode == "lstm" else "OVR "
+
+        # LCD Line 1: Current temp + setpoint
+        self.write(0, f"T:{sensor_temp:4.1f} SET:{setpoint:2d}C")
+
+        # LCD Line 2: Mode + time
+        t = slot_time[-8:-3] if len(slot_time) > 5 else slot_time
+        self.write(1, f"{mode_tag}  {t}    ")
+
+        # Terminal gets the full picture
+        extra = []
+        extra.append(f"{C.WHITE}{C.BOLD}Sensor Readings:{C.RESET}")
+        extra.append(f"  🌡️  Temp:     {C.BOLD}{sensor_temp:6.1f}°C{C.RESET}")
+        if humidity:
+            extra.append(f"  💧 Humidity: {C.BOLD}{humidity:6.1f}%{C.RESET}")
+        if pressure:
+            extra.append(f"  🔵 Pressure: {C.BOLD}{pressure:6.1f} hPa{C.RESET}")
+        extra.append(f"")
+        extra.append(f"{C.WHITE}{C.BOLD}AC Control:{C.RESET}")
+        extra.append(f"  🎯 Setpoint:  {C.BOLD}{setpoint}°C{C.RESET}")
+
+        mode_c = C.GREEN if mode == "lstm" else C.YELLOW
+        extra.append(f"  📋 Mode:      {mode_c}{C.BOLD}{mode.upper()}{C.RESET}")
+
         if voice_cmd:
-            self.write_line(3, f'Cmd:"{voice_cmd[:16]}"')
+            extra.append(f"  🎤 Command:   {C.YELLOW}\"{voice_cmd}\"{C.RESET}")
+
+        self._print_terminal(extra)
+
+    def show_voice_cmd(self, cmd, nlp_result, override_temp=None):
+        """Show voice command being processed."""
+        self.write(0, f'"{cmd[:14]}"')
+        if override_temp:
+            self.write(1, f"OVR -> {override_temp:2d}C     ")
         else:
-            self.write_line(3, f"Next: {time_short}")
+            self.write(1, f"Result: {str(nlp_result)[:9]}")
 
-        if not self._use_hardware:
-            self.render_terminal()
+        extra = [
+            f"{C.YELLOW}{C.BOLD}Voice Command:{C.RESET}",
+            f"  Input:  \"{cmd}\"",
+            f"  NLP:    {nlp_result}",
+        ]
+        if override_temp:
+            extra.append(f"  Action: {C.YELLOW}{C.BOLD}Override to {override_temp}°C for 1 hour{C.RESET}")
+        self._print_terminal(extra)
 
-            # Extra terminal info below the LCD box
-            print(f"  {C.CYAN}{C.BOLD}║{C.RESET}  {C.WHITE}{C.BOLD}Sensor Readings:{C.RESET}                                {C.CYAN}{C.BOLD}║{C.RESET}")
-            print(f"  {C.CYAN}{C.BOLD}║{C.RESET}    🌡️  Temperature: {C.BOLD}{sensor_temp:6.1f}°C{C.RESET}                        {C.CYAN}{C.BOLD}║{C.RESET}")
-            if humidity is not None:
-                print(f"  {C.CYAN}{C.BOLD}║{C.RESET}    💧 Humidity:    {C.BOLD}{humidity:6.1f}%{C.RESET}                         {C.CYAN}{C.BOLD}║{C.RESET}")
-            if pressure is not None:
-                print(f"  {C.CYAN}{C.BOLD}║{C.RESET}    🔵 Pressure:   {C.BOLD}{pressure:6.1f} hPa{C.RESET}                     {C.CYAN}{C.BOLD}║{C.RESET}")
-            if light is not None:
-                print(f"  {C.CYAN}{C.BOLD}║{C.RESET}    ☀️  Light:       {C.BOLD}{light:6.1f} lux{C.RESET}                     {C.CYAN}{C.BOLD}║{C.RESET}")
-
-            print(f"  {C.CYAN}{C.BOLD}║{C.RESET}                                                  {C.CYAN}{C.BOLD}║{C.RESET}")
-            print(f"  {C.CYAN}{C.BOLD}║{C.RESET}  {C.WHITE}{C.BOLD}AC Control:{C.RESET}                                     {C.CYAN}{C.BOLD}║{C.RESET}")
-            print(f"  {C.CYAN}{C.BOLD}║{C.RESET}    🎯 Setpoint:   {C.BOLD}{setpoint:3d}°C{C.RESET}                          {C.CYAN}{C.BOLD}║{C.RESET}")
-            print(f"  {C.CYAN}{C.BOLD}║{C.RESET}    📋 Mode:       {mode_color}{C.BOLD}{mode.upper():>10s}{C.RESET}                      {C.CYAN}{C.BOLD}║{C.RESET}")
-
-            if voice_cmd:
-                print(f"  {C.CYAN}{C.BOLD}║{C.RESET}    🎤 Voice:      {C.YELLOW}{C.BOLD}\"{voice_cmd}\"{C.RESET}                {C.CYAN}{C.BOLD}║{C.RESET}")
-
-            print(f"  {C.CYAN}{C.BOLD}╠══════════════════════════════════════════════════╣{C.RESET}")
-
-    def show_schedule_preview(self, schedule_lines, current_slot=0):
-        """Show a preview of the schedule below the main display."""
-        if self._use_hardware:
-            return  # No room on physical LCD
-
-        print(f"  {C.CYAN}{C.BOLD}║{C.RESET}  {C.WHITE}{C.BOLD}24h Schedule Preview:{C.RESET}                              {C.CYAN}{C.BOLD}║{C.RESET}")
-        print(f"  {C.CYAN}{C.BOLD}║{C.RESET}  {C.DIM}{'Time':>19s}  {'Temp':>5s}  {'Source':>8s}{C.RESET}              {C.CYAN}{C.BOLD}║{C.RESET}")
-        print(f"  {C.CYAN}{C.BOLD}║{C.RESET}  {C.DIM}{'─'*19}  {'─'*5}  {'─'*8}{C.RESET}              {C.CYAN}{C.BOLD}║{C.RESET}")
-
-        for i, line in enumerate(schedule_lines[:12]):
+    def show_schedule(self, lines, current=0):
+        """Show schedule preview in terminal only."""
+        extra = [f"{C.WHITE}{C.BOLD}Schedule (next 10 slots):{C.RESET}"]
+        extra.append(f"  {C.DIM}{'Time':>19}  Temp  Source{C.RESET}")
+        for i, line in enumerate(lines[:10]):
             parts = line.strip().split(',')
-            if len(parts) == 3:
-                ts, temp, src = parts
-                marker = ' ◄' if i == current_slot else '  '
-                if src == 'override':
-                    clr = C.YELLOW
-                elif i == current_slot:
-                    clr = C.GREEN + C.BOLD
-                else:
-                    clr = C.WHITE
+            if len(parts) != 3:
+                continue
+            ts, temp, src = parts
+            marker = ' ◄' if i == current else ''
+            clr = C.YELLOW if src == 'override' else (C.GREEN + C.BOLD if i == current else C.WHITE)
+            extra.append(f"  {clr}{ts}  {temp:>3s}°C  {src}{marker}{C.RESET}")
+        remaining = len(lines) - 10
+        if remaining > 0:
+            extra.append(f"  {C.DIM}... +{remaining} more{C.RESET}")
+        self._print_terminal(extra)
 
-                print(f"  {C.CYAN}{C.BOLD}║{C.RESET}  {clr}{ts:>19s}  {temp:>3s}°C  {src:>8s}{marker}{C.RESET}      {C.CYAN}{C.BOLD}║{C.RESET}")
+    def show_ir(self, setpoint, mode):
+        """Flash IR blaster activity on LCD."""
+        self.write(0, f"IR -> AC {setpoint:2d}C   ")
+        self.write(1, f"Sending...      ")
+        if self._hw:
+            time.sleep(0.3)
+            self.write(1, f"Sent! [{mode:>4s}]   ")
 
-        if len(schedule_lines) > 12:
-            remaining = len(schedule_lines) - 12
-            print(f"  {C.CYAN}{C.BOLD}║{C.RESET}  {C.DIM}... +{remaining} more slots{C.RESET}                              {C.CYAN}{C.BOLD}║{C.RESET}")
-
-        print(f"  {C.CYAN}{C.BOLD}╚══════════════════════════════════════════════════╝{C.RESET}")
-
-    def show_inference_progress(self, step, total, elapsed=None):
-        """Show LSTM inference progress."""
-        pct = int(step / total * 20)
-        bar = '█' * pct + '░' * (20 - pct)
-        time_str = f" ({elapsed:.1f}s)" if elapsed else ""
-        self.write_line(2, f"Infer: [{bar[:16]}]")
-        self.write_line(3, f"{step:3d}/{total} slots{time_str}")
-        if not self._use_hardware:
-            self.render_terminal()
+    def show_goodbye(self):
+        self.write(0, " VATAVARAN  v1.0")
+        self.write(1, "  Goodbye!      ")
+        self._print_terminal()
