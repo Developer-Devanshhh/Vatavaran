@@ -1,87 +1,134 @@
 """
-Raspberry Pi Sensor Reader Module
+Raspberry Pi Sensor Reader Module (Hardware-Enabled)
 
-Reads temperature from RPi sensor hardware and returns formatted data.
+Reads from real sensors:
+  - DHT22: Temperature + Humidity (GPIO digital)
+  - BMP280: Pressure (I2C)
+  - BH1750: Light/Lux (I2C)
+
+Falls back to simulated data when hardware is not available.
+
 Requirements: 1.1, 1.2, 1.3, 14.1
 """
 
 import logging
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict
 
 logger = logging.getLogger(__name__)
 
 # Last valid reading cache
 _last_valid_reading = None
 
+# Sensor pin config (can be overridden via config.json)
+DHT_PIN = 4  # GPIO4
+
+
+def _read_hardware():
+    """
+    Read from actual sensor hardware.
+
+    Returns:
+        dict with temperature_c, humidity, pressure_mb, light
+    """
+    import board
+    import adafruit_dht
+    import adafruit_bmp280
+    import adafruit_bh1750
+
+    # DHT22 — temperature + humidity
+    dht = adafruit_dht.DHT22(getattr(board, f'D{DHT_PIN}'))
+    temperature_c = dht.temperature
+    humidity = dht.humidity
+
+    # BMP280 — pressure (via I2C)
+    i2c = board.I2C()
+    bmp = adafruit_bmp280.Adafruit_BMP280_I2C(i2c)
+    pressure_mb = bmp.pressure
+
+    # BH1750 — light intensity (via I2C)
+    bh = adafruit_bh1750.BH1750(i2c)
+    light = bh.lux
+
+    return {
+        'temperature_c': float(temperature_c),
+        'humidity': float(humidity),
+        'pressure_mb': float(pressure_mb),
+        'light': float(light),
+    }
+
+
 def read_sensor() -> Dict:
     """
-    Read temperature from RPi sensor hardware.
-    
+    Read all sensor values. Falls back to cached or simulated data on failure.
+
     Returns:
-        dict: Sensor reading with timestamp (ISO 8601), temperature_c (float), device_id (string)
-    
-    Requirements:
-        1.1: Return dict with timestamp, temperature_c, device_id
-        1.2: Format timestamp as ISO 8601
-        1.3: Return last valid reading with staleness indicator on hardware failure
+        dict: {timestamp, temperature_c, humidity, pressure_mb, light, device_id}
     """
     global _last_valid_reading
-    
+
     try:
-        # TODO: Replace with actual sensor hardware reading
-        # For now, simulate sensor reading
-        # In production, use libraries like Adafruit_DHT or similar
-        
-        # Example for DHT22 sensor:
-        # import Adafruit_DHT
-        # sensor = Adafruit_DHT.DHT22
-        # pin = 4
-        # humidity, temperature = Adafruit_DHT.read_retry(sensor, pin)
-        
-        # Simulated reading
-        temperature_c = 25.5  # Replace with actual sensor read
-        
-        if temperature_c is None:
-            raise Exception("Sensor returned None")
-        
-        # Create reading dict (Requirement 1.1, 1.2)
+        # Try real hardware first
+        values = _read_hardware()
+
         reading = {
             'timestamp': datetime.now().isoformat(),
-            'temperature_c': float(temperature_c),
+            'temperature_c': values['temperature_c'],
+            'humidity': values['humidity'],
+            'pressure_mb': values['pressure_mb'],
+            'light': values['light'],
             'device_id': 'rpi_sensor_01'
         }
-        
-        # Cache valid reading
+
         _last_valid_reading = reading
-        
-        logger.info(f"Sensor reading: {temperature_c}°C")
+        logger.info(
+            f"Sensor: T={reading['temperature_c']:.1f}°C "
+            f"H={reading['humidity']:.0f}% "
+            f"P={reading['pressure_mb']:.1f}hPa "
+            f"L={reading['light']:.0f}lx"
+        )
         return reading
-        
+
+    except ImportError:
+        # Sensor libraries not installed (e.g., running on a PC)
+        logger.warning("Sensor hardware libraries not installed — using simulated data")
+        reading = {
+            'timestamp': datetime.now().isoformat(),
+            'temperature_c': 26.5,
+            'humidity': 65.0,
+            'pressure_mb': 1013.0,
+            'light': 50.0,
+            'device_id': 'rpi_sensor_01',
+            'simulated': True
+        }
+        return reading
+
     except Exception as e:
-        # Requirement 1.3: Return last valid reading with staleness indicator on failure
         logger.error(f"Sensor hardware failure: {e}")
-        
+
         if _last_valid_reading is not None:
-            # Return cached reading with staleness indicator
-            stale_reading = _last_valid_reading.copy()
-            stale_reading['stale'] = True
-            stale_reading['error'] = str(e)
-            logger.warning(f"Returning stale reading from {stale_reading['timestamp']}")
-            return stale_reading
-        else:
-            # No cached reading available
-            logger.error("No cached reading available")
-            raise Exception(f"Sensor failure and no cached data: {e}")
+            stale = _last_valid_reading.copy()
+            stale['stale'] = True
+            stale['error'] = str(e)
+            logger.warning(f"Returning stale reading from {stale['timestamp']}")
+            return stale
+
+        # No cached reading — return simulated
+        logger.error("No cached reading, returning simulated data")
+        return {
+            'timestamp': datetime.now().isoformat(),
+            'temperature_c': 25.0,
+            'humidity': 60.0,
+            'pressure_mb': 1013.0,
+            'light': 40.0,
+            'device_id': 'rpi_sensor_01',
+            'simulated': True,
+            'error': str(e)
+        }
 
 
 if __name__ == "__main__":
-    # Test sensor reader
     logging.basicConfig(level=logging.INFO)
-    
     print("Testing sensor reader...")
-    try:
-        reading = read_sensor()
-        print(f"Reading: {reading}")
-    except Exception as e:
-        print(f"Error: {e}")
+    reading = read_sensor()
+    print(f"Reading: {reading}")

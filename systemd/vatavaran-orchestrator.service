@@ -1,0 +1,25 @@
+[Unit]
+Description=Vatavaran Edge Orchestrator — ML Climate Control
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/vatavaran
+ExecStart=/home/pi/vatavaran/venv/bin/python -m edge.orchestrator
+Restart=always
+RestartSec=30
+Environment=WEATHERAPI_KEY=YOUR_KEY_HERE
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vatavaran-orchestrator
+
+# Resource limits (be kind to the Pi)
+MemoryMax=512M
+CPUQuota=80%
+
+[Install]
+WantedBy=multi-user.target

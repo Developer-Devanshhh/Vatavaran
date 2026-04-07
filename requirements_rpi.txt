@@ -1,0 +1,28 @@
+# Vatavaran Edge — Raspberry Pi 4B Dependencies
+# No Django, no full TensorFlow — lightweight for edge deployment
+#
+# Install: pip install -r requirements_rpi.txt
+
+# ML inference (TFLite runtime only — ~3 MB vs TensorFlow's ~500 MB)
+tflite-runtime
+
+# Data processing
+numpy
+pandas
+scikit-learn
+joblib
+
+# Weather API
+requests
+
+# Voice control (offline STT)
+vosk
+pyaudio
+
+# Raspberry Pi sensor libraries (Adafruit CircuitPython)
+adafruit-circuitpython-dht
+adafruit-circuitpython-bmp280
+adafruit-circuitpython-bh1750
+
+# RPi GPIO (usually pre-installed on RPi OS)
+# RPi.GPIO

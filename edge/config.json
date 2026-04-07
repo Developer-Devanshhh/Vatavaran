@@ -1,0 +1,22 @@
+{
+    "weatherapi_key": "YOUR_WEATHERAPI_KEY_HERE",
+    "location": {
+        "lat": 12.9165,
+        "lon": 79.1325,
+        "name": "Vellore, Tamil Nadu"
+    },
+    "model_dir": ".",
+    "schedule_file": "schedule.csv",
+    "sensor": {
+        "dht_pin": 4,
+        "poll_interval_sec": 60
+    },
+    "prediction_interval_min": 15,
+    "voice": {
+        "enabled": true,
+        "model_path": "vosk-model-small-en-in-0.4",
+        "listen_duration_sec": 5
+    },
+    "ir_codes_file": "ir_codes.json",
+    "log_level": "INFO"
+}

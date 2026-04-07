@@ -1,0 +1,19 @@
+[Unit]
+Description=Vatavaran IR Blaster — AC Temperature Control
+After=vatavaran-orchestrator.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/vatavaran
+ExecStart=/home/pi/vatavaran/venv/bin/python rpi/ir_blaster.py
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vatavaran-ir-blaster
+
+[Install]
+WantedBy=multi-user.target
